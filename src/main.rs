@@ -46,6 +46,7 @@ impl ContainerFam for OptionF {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StorageTypeName {
     U32,
     U64
@@ -212,6 +213,22 @@ impl TryFrom<StorageValueT> for u64 {
     }
 }
 
+macro_rules! calculated_doc {
+    (
+        $(
+            $(#[$m:meta])*
+            @#[doc = $doc:expr]
+            $thing:item
+        )*
+    ) => (
+        $(
+            $(#[$m])*
+            #[doc = $doc]
+            $thing
+        )*
+    );
+}
+
 macro_rules! const_op {
     ($name:ident = $fam:ident::$op:ident($($param:ident : $param_ty:ty),*)$(.$post_op:tt$post_op_args:tt)* -> $res:ty) => {
         pub struct $name { $($param: $param_ty),* }
@@ -228,7 +245,16 @@ macro_rules! const_op {
                 <Self::OpRes as ContainerFam>::Container<T> {
                 input.$op($(self.$param),*)$(.$post_op$post_op_args)*
             }
-        }       
+        }
+
+        impl MonContainer<$fam> {
+            calculated_doc! {
+                @#[doc = concat!("Forwards to `", stringify!($fam), "::Container<T>::", stringify!($op), "`")]
+                pub fn $op(&self $(,$param: $param_ty)*) -> MonContainer<$res> {
+                    self.map($name { $($param,)* })
+                }
+            }
+       }
     };
 }
 
@@ -237,7 +263,6 @@ const_op!(Unwrap = OptionF::unwrap() -> StorageValueF);
 const_op!(UnwrapOrDefault = OptionF::unwrap_or_default() -> StorageValueF);
 const_op!(VecLen = VecF::len() -> ConstF<usize>);
 const_op!(VecGet = VecF::get(index: usize).cloned() -> OptionF);
-const_op!(VecIndex = VecF::get(index: usize).cloned().unwrap() -> StorageValueF);
 
 impl ContainerAdd for VecF {
     fn add<T: StorageValueType>(c: &mut Self::Container<T>, elem: T) {
@@ -254,12 +279,13 @@ fn main() {
 
     ContainerOf::<u32>::mut_inner(&mut data).unwrap()[3] += 1;
 
-    let result = data.map(VecGet { index: 3 });
+    let result = data.get(3);
     let result1 = result;
-    let len = data.map(VecLen {}).into_inner();
+    let len = data.len().into_inner();
 
     assert_eq!(ContainerOf::<u32>::as_inner(&data).unwrap(), &[0, 1, 23, 42]);
     assert_eq!(result, OptionT::U32(Some(42)));
     assert_eq!(result, result1);
+    assert_eq!(data.get(25).unwrap_or_default(), StorageValueT::U32(0));
     assert_eq!(len, 4);
 }
