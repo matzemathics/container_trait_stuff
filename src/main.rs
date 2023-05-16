@@ -1,10 +1,10 @@
 use std::marker::PhantomData;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum StorageValueF { }
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum VecF { }
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum OptionF { }
 
 trait StorageValueType : Default + Copy {}
@@ -51,7 +51,7 @@ enum StorageTypeName {
     U64
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MonContainer<F: ContainerFam> {
     U32(F::Container<u32>),
     U64(F::Container<u64>)
@@ -68,21 +68,56 @@ trait ContainerOp<Fam: ContainerFam>: ContainerOpMut<Fam> {
         <Self::OpRes as ContainerFam>::Container<T>;
 }
 
-impl<Fam: ContainerFam> MonContainer<Fam> {
-    fn as_u32(&self) -> Option<&Fam::Container<u32>> {
-        match self {
-            Self::U32(c) => Some(c),
-            _ => None
-        }
-    }
-    
-    fn mut_u32(&mut self) -> Option<&mut Fam::Container<u32>> {
-        match self {
-            Self::U32(c) => Some(c),
-            _ => None
-        }
-    }
+trait ContainerFrom<Fam: ContainerFam> : ContainerFam {
+    type FromArgs;
 
+    fn build_from<T: StorageValueType>(c: Fam::Container<T>, args: Self::FromArgs) -> Self::Container<T>;
+}
+
+trait ContainerAdd : ContainerFam {
+    fn add<T: StorageValueType>(c: &mut Self::Container<T>, elem: T);
+}
+
+trait ContainerOf<T> {
+    type Family: ContainerFam;
+    fn as_inner(&self) -> Option<&<Self::Family as ContainerFam>::Container<T>>;
+    fn mut_inner(&mut self) -> Option<&mut <Self::Family as ContainerFam>::Container<T>>;
+    fn into_inner(self) -> Option<<Self::Family as ContainerFam>::Container<T>>;
+}
+
+macro_rules! mon_container_of_impl {
+    ($variant:ident => $ty:ty) => {
+        impl<Fam: ContainerFam> ContainerOf<$ty> for MonContainer<Fam> {
+            type Family = Fam;
+
+            fn as_inner(&self) -> Option<&Fam::Container<$ty>> {
+                match self {
+                    Self::$variant(c) => Some(c),
+                    _ => None
+                }
+            }
+
+            fn mut_inner(&mut self) -> Option<&mut Fam::Container<$ty>> {
+                match self {
+                    Self::$variant(c) => Some(c),
+                    _ => None
+                }
+            }
+
+            fn into_inner(self) -> Option<Fam::Container<$ty>> {
+                match self {
+                    Self::$variant(c) => Some(c),
+                    _ => None
+                }
+            }
+        }       
+    };
+}
+
+mon_container_of_impl!(U32 => u32);
+mon_container_of_impl!(U64 => u64);
+
+impl<Fam: ContainerFam> MonContainer<Fam> {
     fn map<Op: ContainerOp<Fam>>(&self, mapping: Op) -> MonContainer<Op::OpRes> {
         match self {
             Self::U32(c) => 
@@ -105,10 +140,33 @@ impl<Fam: ContainerFam> MonContainer<Fam> {
             StorageTypeName::U64 => Self::U64(Fam::construct(args)),
         }
     }
+
+    fn build_into<F: ContainerFrom<Fam>>(self, args: F::FromArgs) -> MonContainer<F> {
+        match self {
+            MonContainer::U32(c) => MonContainer::U32(F::build_from(c, args)),
+            MonContainer::U64(c) => MonContainer::U64(F::build_from(c, args)),
+        }
+    }
+}
+
+impl<F: ContainerAdd> MonContainer<F> {
+    fn add(&mut self, elem: StorageValueT) {
+        match self {
+            MonContainer::U32(c) => {
+                let StorageValueT::U32(v) = elem else { panic!("wrong value type") };
+                F::add(c, v);
+            }
+            MonContainer::U64(c) => {
+                let StorageValueT::U64(v) = elem else { panic!("wrong value type") };
+                F::add(c, v);
+            }
+        }
+    }
 }
 
 type VecT = MonContainer<VecF>;
 type StorageValueT = MonContainer<StorageValueF>;
+type OptionT = MonContainer<OptionF>;
 
 struct ConstF<T> {
     _phantom: PhantomData<T>
@@ -181,11 +239,27 @@ const_op!(VecLen = VecF::len() -> ConstF<usize>);
 const_op!(VecGet = VecF::get(index: usize).cloned() -> OptionF);
 const_op!(VecIndex = VecF::get(index: usize).cloned().unwrap() -> StorageValueF);
 
+impl ContainerAdd for VecF {
+    fn add<T: StorageValueType>(c: &mut Self::Container<T>, elem: T) {
+        c.push(elem);
+    }
+}
+
 fn main() {
     let mut data: VecT = VecT::construct((), StorageTypeName::U32);
-    data.mut_u32().unwrap().extend_from_slice(&[0, 1, 23, 42]);
-    let result = data.map(VecIndex { index: 3 });
+
+    for d in [0, 1, 23, 41] {
+        data.add(StorageValueT::U32(d))
+    }
+
+    ContainerOf::<u32>::mut_inner(&mut data).unwrap()[3] += 1;
+
+    let result = data.map(VecGet { index: 3 });
+    let result1 = result;
     let len = data.map(VecLen {}).into_inner();
 
-    println!("vec = {data:?}, result = {result:?}; len = {}", len);
+    assert_eq!(ContainerOf::<u32>::as_inner(&data).unwrap(), &[0, 1, 23, 42]);
+    assert_eq!(result, OptionT::U32(Some(42)));
+    assert_eq!(result, result1);
+    assert_eq!(len, 4);
 }
